@@ -1817,3 +1817,117 @@ async def test_request_is_counted_when_provider_omits_usage(monkeypatch) -> None
     assert resp.usage.input_tokens == 0
     assert resp.usage.output_tokens == 0
     assert resp.usage.total_tokens == 0
+
+
+@pytest.mark.allow_call_model_methods
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "expected_input",
+        "expected_output",
+        "expected_total",
+    ),
+    [
+        # Nullable token fields normalize to 0
+        (10, None, 10, 10, 0, 10),
+        (None, 5, 5, 0, 5, 5),
+        (7, 3, None, 7, 3, 0),
+        (None, None, None, 0, 0, 0),
+        # Zero stays zero
+        (0, 0, 0, 0, 0, 0),
+        (0, None, 0, 0, 0, 0),
+        # Valid non-zero values remain unchanged
+        (15, 25, 40, 15, 25, 40),
+    ],
+    ids=[
+        "null-completion-tokens",
+        "null-prompt-tokens",
+        "null-total-tokens",
+        "all-null-tokens",
+        "all-zero-tokens",
+        "zero-and-null-tokens",
+        "non-zero-tokens-unchanged",
+    ],
+)
+async def test_get_response_normalizes_nullable_usage_token_counts(
+    monkeypatch: pytest.MonkeyPatch,
+    prompt_tokens: int | None,
+    completion_tokens: int | None,
+    total_tokens: int | None,
+    expected_input: int,
+    expected_output: int,
+    expected_total: int,
+) -> None:
+    """Non-streaming get_response normalizes nullable token counts to 0."""
+    chat = _minimal_chat_completion("hello")
+    chat.usage = CompletionUsage.model_construct(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+    )
+
+    async def patched_fetch_response(self, *args, **kwargs):
+        return chat
+
+    monkeypatch.setattr(OpenAIChatCompletionsModel, "_fetch_response", patched_fetch_response)
+    model = OpenAIProvider(use_responses=False).get_model("gpt-4")
+    resp: ModelResponse = await model.get_response(
+        system_instructions=None,
+        input="",
+        model_settings=ModelSettings(),
+        tools=[],
+        output_schema=None,
+        handoffs=[],
+        tracing=ModelTracing.DISABLED,
+        previous_response_id=None,
+        conversation_id=None,
+        prompt=None,
+    )
+
+    assert resp.usage.requests == 1
+    assert resp.usage.input_tokens == expected_input
+    assert resp.usage.output_tokens == expected_output
+    assert resp.usage.total_tokens == expected_total
+
+
+@pytest.mark.allow_call_model_methods
+@pytest.mark.asyncio
+async def test_non_streaming_chat_completions_run_with_null_token_counts() -> None:
+    """Runner.run completes when an OpenAI-compatible provider sends null in usage."""
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(
+            200,
+            json={
+                "id": "chatcmpl_null_tokens",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "gpt-4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "mocked answer"},
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": None, "total_tokens": 10},
+            },
+        )
+
+    client = AsyncOpenAI(
+        api_key="mock-key",
+        base_url="http://test/v1",
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    model = OpenAIChatCompletionsModel(model="gpt-4", openai_client=client)
+    agent = Agent(name="test-agent", model=model)
+
+    result = await Runner.run(agent, "hi")
+    assert result.final_output == "mocked answer"
+    assert result.context_wrapper.usage.requests == 1
+    assert result.context_wrapper.usage.input_tokens == 10
+    assert result.context_wrapper.usage.output_tokens == 0
+    assert result.context_wrapper.usage.total_tokens == 10
