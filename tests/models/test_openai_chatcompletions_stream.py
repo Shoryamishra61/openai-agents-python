@@ -4551,3 +4551,38 @@ async def test_streamed_span_counts_request_on_length_truncation_without_usage(
     assert generation.span_data.usage is not None
     assert generation.span_data.usage["requests"] == 1
     assert generation.span_data.usage["total_tokens"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stream_handler_normalizes_nullable_usage_token_counts() -> None:
+    """Streaming Chat Completions normalizes nullable token counts to 0 without error."""
+    chunk = ChatCompletionChunk(
+        id="chunk-id",
+        created=1,
+        model="fake",
+        object="chat.completion.chunk",
+        choices=[],
+        usage=CompletionUsage.model_construct(
+            prompt_tokens=10,
+            completion_tokens=None,
+            total_tokens=10,
+        ),
+    )
+
+    async def fake_stream() -> AsyncIterator[ChatCompletionChunk]:
+        yield chunk
+
+    events = [
+        event
+        async for event in ChatCmplStreamHandler.handle_stream(
+            _empty_response(), cast(Any, fake_stream()), preserve_raw_usage=True
+        )
+    ]
+
+    completed_events = [e for e in events if e.type == "response.completed"]
+    assert len(completed_events) == 1
+    final_response = completed_events[0].response
+    assert final_response.usage is not None
+    assert final_response.usage.input_tokens == 10
+    assert final_response.usage.output_tokens == 0
+    assert final_response.usage.total_tokens == 10

@@ -2428,3 +2428,69 @@ async def test_any_llm_responses_stream_with_usage_is_not_marked(monkeypatch) ->
     assert isinstance(terminal, ResponseCompletedEvent)
     assert terminal.response.usage is not None
     assert _requests_for_response_without_usage(terminal.response) == 0
+
+
+@pytest.mark.allow_call_model_methods
+@pytest.mark.asyncio
+async def test_any_llm_chat_completions_normalizes_nullable_usage_tokens(monkeypatch) -> None:
+    """AnyLLMChatCompletionsModel normalizes nullable token counts to 0."""
+    chat = _chat_completion("hello")
+    chat.usage = CompletionUsage.model_construct(
+        prompt_tokens=10,
+        completion_tokens=None,
+        total_tokens=10,
+    )
+    provider = FakeAnyLLMProvider(supports_responses=False, chat_response=chat)
+    module, _create_calls = _import_any_llm_module(monkeypatch, provider)
+
+    model = module.AnyLLMModel(model="openrouter/openai/gpt-4")
+    response = await model.get_response(
+        system_instructions=None,
+        input="hi",
+        model_settings=ModelSettings(),
+        tools=[],
+        output_schema=None,
+        handoffs=[],
+        tracing=ModelTracing.DISABLED,
+        previous_response_id=None,
+        conversation_id=None,
+        prompt=None,
+    )
+
+    assert response.usage.requests == 1
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 0
+    assert response.usage.total_tokens == 10
+
+
+@pytest.mark.allow_call_model_methods
+@pytest.mark.asyncio
+async def test_any_llm_responses_normalizes_nullable_usage_tokens(monkeypatch) -> None:
+    """AnyLLMResponsesModel normalizes nullable token counts to 0."""
+    resp = _response("hello")
+    resp.usage = ResponseUsage.model_construct(
+        input_tokens=12,
+        output_tokens=None,
+        total_tokens=12,
+    )
+    provider = FakeAnyLLMProvider(supports_responses=True, responses_response=resp)
+    module, _create_calls = _import_any_llm_module(monkeypatch, provider)
+
+    model = module.AnyLLMModel(model="openai/gpt-4")
+    response = await model.get_response(
+        system_instructions=None,
+        input="hi",
+        model_settings=ModelSettings(),
+        tools=[],
+        output_schema=None,
+        handoffs=[],
+        tracing=ModelTracing.DISABLED,
+        previous_response_id=None,
+        conversation_id=None,
+        prompt=None,
+    )
+
+    assert response.usage.requests == 1
+    assert response.usage.input_tokens == 12
+    assert response.usage.output_tokens == 0
+    assert response.usage.total_tokens == 12
